@@ -1,0 +1,66 @@
+{
+  "manifest_version": 3,
+  "name": "飞书文档读取器",
+  "version": "2.0.0",
+  "description": "简化版飞书文档内容读取器，使用权限: docs:document.content:read",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "tabs",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://*.feishu.cn/*",
+    "https://*.larksuite.com/*",
+    "https://*.larkoffice.com/*",
+    "https://fsopen.feishu.cn/*",
+    "https://fsopen.bytedance.net/*",
+    "https://open.feishu.cn/*",
+    "https://open.larksuite.com/*",
+    "https://forlark.zeabur.app/*",
+    "http://localhost:8080/*"
+  ],
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "action": {
+    "default_title": "打开飞书文档读取器",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.feishu.cn/*",
+        "https://*.larksuite.com/*",
+        "https://*.larkoffice.com/*",
+        "https://feishu.cn/*",
+        "https://larksuite.com/*",
+        "https://larkoffice.com/*"
+      ],
+      "js": ["content.js", "selection_listener.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://forlark.zeabur.app/callback.html*",
+        "http://localhost:8080/callback*"
+      ],
+      "js": ["callback_content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

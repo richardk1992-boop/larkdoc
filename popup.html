@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>飞书文档 AI 助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- 顶部栏：获取内容与操作 -->
+    <div class="top-bar">
+      <button id="fetchContent" class="btn btn-success btn-compact">
+        <span class="btn-icon">📥</span> 获取文档
+      </button>
+      
+      <div id="docStatusSection" class="doc-status hidden">
+        <span class="status-item" title="正文状态"><span id="docStatusIcon">⚪</span> 文</span>
+        <span class="status-item" title="评论状态"><span id="commentStatusIcon">⚪</span> 评</span>
+      </div>
+
+      <div class="spacer"></div>
+
+      <button id="downloadMdBtn" class="icon-btn hidden" title="下载 Markdown">📥</button>
+      <button id="openSettings" class="icon-btn" title="设置">⚙️</button>
+    </div>
+
+    <!-- 聊天区域 -->
+    <div class="chat-section">
+      <div class="chat-messages" id="chatMessages">
+        <div class="message system">
+          <div class="message-content">👋 欢迎！点击左上角获取文档，然后开始对话。</div>
+        </div>
+      </div>
+
+      <!-- 底部输入区容器 -->
+      <div class="bottom-area">
+        <!-- 悬浮快捷指令栏 -->
+        <div class="prompt-bar" id="promptBar">
+          <button class="prompt-chip" data-prompt-id="0">总结文档</button>
+          <button class="prompt-chip" data-prompt-id="1">提取待办</button>
+          <button class="prompt-chip" data-prompt-id="2">分析评论</button>
+          <button class="prompt-chip" data-prompt-id="3">润色文本</button>
+        </div>
+
+        <!-- 输入框 -->
+        <div class="chat-input-area">
+          <div id="selectionPreview" class="selection-preview hidden">
+            <span class="sel-text" id="selTextContent"></span>
+            <button id="clearSelection" class="sel-clear">×</button>
+          </div>
+          <textarea id="chatInput" placeholder="输入问题或指令..." rows="1"></textarea>
+          <div class="chat-actions">
+            <button id="geminiModeToggle" class="icon-btn gemini-toggle hidden" title="切换 Gemini 模式">Flash</button>
+            <button id="sendMessage" class="btn-send">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 错误提示 -->
+    <div id="errorSection" class="error-toast hidden">
+      <span id="errorContent"></span>
+      <button class="close-toast">×</button>
+    </div>
+  </div>
+
+  <!-- 设置模态框 -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>设置</h2>
+        <button id="closeSettings" class="close-btn">×</button>
+      </div>
+      
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tab-ai">🤖 AI 模型</button>
+        <button class="tab-btn" data-tab="tab-feishu">📄 飞书配置</button>
+        <button class="tab-btn" data-tab="tab-prompts">⚡️ 快捷指令</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Tab 1: AI 配置 -->
+        <div id="tab-ai" class="tab-content active">
+          <div class="input-group">
+            <label>选择模型:</label>
+            <select id="modelSelect">
+              <option value="zhipu">智谱 AI (GLM-4.7)</option>
+              <option value="gemini">Gemini Pro</option>
+              <option value="custom">自定义 (OpenAI 兼容)</option>
+            </select>
+          </div>
+          
+          <div id="modelConfigArea">
+            <div class="input-group">
+              <label>API Key:</label>
+              <input type="text" id="aiApiKey" placeholder="sk-..." />
+            </div>
+            <div class="input-group hidden" id="geminiModelGroup">
+              <label>Gemini Model:</label>
+              <input type="text" id="geminiModelName" placeholder="gemini-3-flash-preview" />
+              <div style="font-size: 10px; color: #888; margin-top: 2px;">
+                推荐: gemini-1.5-flash, gemini-2.0-flash, gemini-3-flash-preview
+              </div>
+            </div>
+            <div class="input-group hidden" id="geminiTestGroup">
+              <button id="testGeminiConnection" class="btn btn-success">测试 Gemini 连接</button>
+            </div>
+            <div class="input-group hidden" id="customEndpointGroup">
+              <label>API Endpoint:</label>
+              <input type="text" id="aiApiUrl" placeholder="https://api.openai.com/v1" />
+            </div>
+            <div class="input-group hidden" id="customModelGroup">
+              <label>Model Name:</label>
+              <input type="text" id="aiModelName" placeholder="gpt-3.5-turbo" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: 飞书配置 -->
+        <div id="tab-feishu" class="tab-content">
+          <div class="input-group">
+            <label>App ID:</label>
+            <input type="text" id="appId" placeholder="cli_aXXXXXXXX" />
+          </div>
+          <div class="input-group">
+            <label>App Secret:</label>
+            <input type="password" id="appSecret" placeholder="应用密钥" />
+          </div>
+          
+          <div class="divider"></div>
+          
+          <div class="section-title-small">👤 用户授权状态</div>
+          <div class="auth-status-card">
+            <div class="auth-info">
+              <span class="auth-indicator" id="authIndicator"></span>
+              <span id="authStatusText">未授权</span>
+            </div>
+            <div class="auth-actions">
+              <button id="authorizeBtn" class="btn btn-small">去授权</button>
+              <button id="logoutBtn" class="btn btn-small btn-danger hidden">退出</button>
+            </div>
+          </div>
+          
+          <div class="test-conn-wrapper">
+             <button id="testConnection" class="btn btn-small btn-outline" style="width:100%">测试连接</button>
+          </div>
+        </div>
+
+        <!-- Tab 3: Prompt 配置 -->
+        <div id="tab-prompts" class="tab-content">
+          <div id="promptsContainer">
+            <!-- Dynamic Content -->
+          </div>
+          <button id="addPromptBtn" class="btn btn-outline btn-small" style="width:100%; margin-top:10px;">+ 添加新指令 (最多20个)</button>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="saveSettings" class="btn btn-primary">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

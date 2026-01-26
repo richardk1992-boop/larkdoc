@@ -1,0 +1,5 @@
+.DS_Store
+upload-temp/
+*.bak
+*.log
+node_modules/
