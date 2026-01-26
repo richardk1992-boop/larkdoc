@@ -997,18 +997,63 @@ async function startAuthorization() {
 async function logout() {
     await chrome.storage.local.remove(['userToken']);
     checkAuthStatus();
-    alert('已退出登录');
 }
 
 async function checkAuthStatus() {
-    const storage = await chrome.storage.local.get(['userToken']);
-    const btn = document.getElementById('authorizeBtn');
+    const storage = await chrome.storage.local.get(['userToken', 'oauthError']);
+    
+    // UI Elements
+    const authorizeBtn = document.getElementById('authorizeBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const authIndicator = document.getElementById('authIndicator');
+    const authStatusText = document.getElementById('authStatusText');
+
+    if (storage.oauthError) {
+        showError(storage.oauthError);
+        // Clear error after showing so it doesn't persist forever
+        chrome.storage.local.remove(['oauthError']);
+    }
+
     if (storage.userToken) {
-        btn.textContent = `✅ 已授权 (${storage.userToken.user.name})`;
-        btn.disabled = true;
+        // 已授权状态
+        const userName = storage.userToken.user ? storage.userToken.user.name : '用户';
+        
+        if (authStatusText) {
+            authStatusText.textContent = `已授权 (${userName})`;
+            authStatusText.style.color = '#52c41a';
+        }
+        
+        if (authIndicator) {
+            authIndicator.classList.add('active');
+        }
+        
+        if (authorizeBtn) {
+            authorizeBtn.classList.add('hidden');
+        }
+        
+        if (logoutBtn) {
+            logoutBtn.classList.remove('hidden');
+        }
     } else {
-        btn.textContent = '用户登录授权';
-        btn.disabled = false;
+        // 未授权状态
+        if (authStatusText) {
+            authStatusText.textContent = '未授权';
+            authStatusText.style.color = '#666';
+        }
+        
+        if (authIndicator) {
+            authIndicator.classList.remove('active');
+        }
+        
+        if (authorizeBtn) {
+            authorizeBtn.classList.remove('hidden');
+            authorizeBtn.textContent = '去授权';
+            authorizeBtn.disabled = false;
+        }
+        
+        if (logoutBtn) {
+            logoutBtn.classList.add('hidden');
+        }
     }
 }
 

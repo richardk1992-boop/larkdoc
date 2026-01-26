@@ -111,7 +111,7 @@ async function handleContentScriptCallback(request, sender) {
 // ===== 监听 OAuth 回调 =====
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   // 检查 URL 是否包含我们的重定向地址
-  if (tab.url && (tab.url.includes('forlark.zeabur.app/callback.html') || tab.url.includes('localhost:8080/callback'))) {
+  if (tab.url && (tab.url.includes('forlark.zeabur.app/callback.html') || tab.url.includes('localhost:8080/callback') || (tab.url.includes('github.io') && tab.url.includes('/callback.html')))) {
     console.log('[OAuth] onUpdated 检测到回调 URL:', tab.url);
     // 使用统一的处理逻辑
     handleCallbackTab(tabId, tab.url);
@@ -196,7 +196,7 @@ function startPolling() {
     try {
       const tabs = await chrome.tabs.query({});
       for (const tab of tabs) {
-        if (tab.url && (tab.url.includes('forlark.zeabur.app/callback.html') || tab.url.includes('localhost:8080/callback'))) {
+        if (tab.url && (tab.url.includes('forlark.zeabur.app/callback.html') || tab.url.includes('localhost:8080/callback') || (tab.url.includes('github.io') && tab.url.includes('/callback.html')))) {
           console.log('[OAuth] 轮询发现回调 Tab:', tab.id, tab.url);
           // 触发处理逻辑
           handleCallbackTab(tab.id, tab.url);

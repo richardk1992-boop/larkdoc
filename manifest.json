@@ -52,7 +52,8 @@
     {
       "matches": [
         "https://forlark.zeabur.app/callback.html*",
-        "http://localhost:8080/callback*"
+        "http://localhost:8080/callback*",
+        "https://*.github.io/*/callback.html*"
       ],
       "js": ["callback_content.js"],
       "run_at": "document_end"

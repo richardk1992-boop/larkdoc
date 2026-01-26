@@ -270,6 +270,52 @@ body {
 }
 .hidden { display: none !important; }
 
+/* Auth Status Card */
+.auth-status-card {
+  background: #f9f9f9;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.auth-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333;
+}
+.auth-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #ccc;
+  display: inline-block;
+}
+.auth-indicator.active {
+  background-color: #52c41a;
+  box-shadow: 0 0 4px rgba(82, 196, 26, 0.4);
+}
+.auth-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.divider {
+  height: 1px;
+  background-color: #eee;
+  margin: 16px 0;
+}
+.section-title-small {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
 /* Prompt Config */
 .prompt-config-item {
   background: #f9f9f9; padding: 8px; border-radius: 4px; margin-bottom: 8px;
