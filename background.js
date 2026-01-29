@@ -600,12 +600,11 @@ function formatComments(comments) {
     // 获取引用文本 (quote)
     const quote = comment.quote || '（无引用文本）';
     
+    // 获取评论者 ID
+    const userId = comment.user_id || '未知ID';
+    
     // 解析评论内容
     // 注意：顶层评论可能没有 content，只有 reply_list（第一条回复即为主评论内容）
-    // 飞书云文档评论接口返回的结构中，顶层对象通常没有 content 字段，
-    // 而是把第一条 reply 当作评论内容。
-    // 参考日志结构：{"comment_id":..., "reply_list":{"replies":[{ "content": ... }]}}
-    
     let content = '';
     const replies = comment.reply_list?.replies || comment.replies || [];
     
@@ -614,21 +613,16 @@ function formatComments(comments) {
         content = parseRichText(comment.content);
     } 
     // 如果顶层没有 content，尝试使用第一条回复作为主评论内容
-    // 实际上飞书 API 返回的 replies 数组中，第一条通常就是“评论本身”
     else if (replies.length > 0) {
-        // 取第一条作为主内容
         content = parseRichText(replies[0].content);
-        // 如果第一条被当作主内容使用了，后续展示回复时应该跳过它？
-        // 通常 UI 上是把整个 thread 展示出来。这里为了清晰，我们把第一条当作主楼。
     }
 
     if (!content) content = '（无内容）';
     
     md += `> **引用**: ${quote}\n\n`;
-    md += `**评论 ${index + 1}**: ${content}\n`;
+    md += `**评论 ${index + 1} (用户: ${userId})**: ${content}\n`;
     
     // 处理回复（从第二条开始，或者全部列出）
-    // 策略：如果主内容是从 replies[0] 取的，那么回复列表应该从 replies[1] 开始
     let replyStartIndex = 0;
     if (!comment.content && replies.length > 0) {
         replyStartIndex = 1;
@@ -639,8 +633,10 @@ function formatComments(comments) {
       for (let i = replyStartIndex; i < replies.length; i++) {
         const reply = replies[i];
         let replyContent = parseRichText(reply.content);
+        const replyUserId = reply.user_id || '未知ID';
+        
         if (!replyContent) replyContent = '（无内容）';
-        md += `- ${replyContent}\n`;
+        md += `- **用户 ${replyUserId}**: ${replyContent}\n`;
       }
     }
     md += '\n---\n';

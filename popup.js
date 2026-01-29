@@ -587,50 +587,93 @@ async function callAIService(prompt) {
 function simpleMarkdown(text) {
   if (!text) return '';
   
-  // 1. Escape HTML (prevent XSS)
   let html = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-  // 2. Protect Code Blocks
   const codeBlocks = [];
   html = html.replace(/```(\w*)([\s\S]*?)```/g, (match, lang, code) => {
     codeBlocks.push(`<pre><code>${code.trim()}</code></pre>`);
     return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
   });
 
-  // 3. Inline Code (`code`)
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  // 4. Headers
   html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
 
-  // 5. Blockquote
   html = html.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
 
-  // 6. Lists (Simple Support)
   html = html.replace(/^\s*[-*] (.*$)/gm, '<li>$1</li>');
   html = html.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
-  // Wrap adjacent li in ul (Simple heuristic)
   html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
 
-  // 7. Bold & Italic
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
   html = html.replace(/__(.*?)__/g, '<strong>$1</strong>');
   html = html.replace(/_(.*?)_/g, '<em>$1</em>');
   
-  // 8. Links [text](url)
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
 
-  // 9. Horizontal Rule
   html = html.replace(/^---$/gm, '<hr>');
 
-  // Restore Code Blocks
+  const parseTableRow = (line) => {
+    const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+    return trimmed.split('|').map(cell => cell.trim());
+  };
+
+  const convertTables = (input) => {
+    const lines = input.split('\n');
+    const output = [];
+    const separatorRegex = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const next = lines[i + 1];
+      if (line && line.includes('|') && next && separatorRegex.test(next)) {
+        const headers = parseTableRow(line);
+        const rows = [];
+        i += 2;
+        for (; i < lines.length; i++) {
+          const rowLine = lines[i];
+          if (!rowLine || !rowLine.includes('|')) {
+            i -= 1;
+            break;
+          }
+          rows.push(parseTableRow(rowLine));
+        }
+        const thead = `<thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>`;
+        const tbody = rows.length
+          ? `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>`
+          : '';
+        output.push('', `<table>${thead}${tbody}</table>`, '');
+      } else {
+        output.push(line);
+      }
+    }
+    return output.join('\n');
+  };
+
+  html = convertTables(html);
+
   html = html.replace(/__CODE_BLOCK_(\d+)__/g, (match, index) => codeBlocks[index]);
+
+  const wrapParagraphs = (input) => {
+    const blocks = input.split(/\n{2,}/);
+    const wrapped = blocks.map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return '';
+      if (/^<(h[1-4]|ul|ol|li|pre|blockquote|table|hr|p)\b/i.test(trimmed)) {
+        return trimmed;
+      }
+      const withBreaks = trimmed.replace(/\n/g, '<br>');
+      return `<p>${withBreaks}</p>`;
+    });
+    return wrapped.filter(Boolean).join('\n\n');
+  };
+
+  html = wrapParagraphs(html);
 
   return `<div class="markdown-body">${html}</div>`;
 }
