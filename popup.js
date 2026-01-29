@@ -375,6 +375,7 @@ async function fetchDocumentContent() {
     const response = await chrome.runtime.sendMessage({
       action: 'fetchDocument',
       documentId: docIdResult.documentId,
+      docType: docIdResult.type, // 传递文档类型
       appId: config.appId,
       appSecret: config.appSecret,
       domain: tab.url
@@ -976,8 +977,8 @@ async function getDocumentIdFromTab(tab) {
       func: () => {
         const path = window.location.pathname;
         const pathMatch = path.match(/\/(docx|docs|wiki|note|slides|sheets|bitable)\/([a-zA-Z0-9_-]+)/);
-        if (pathMatch) return { documentId: pathMatch[2] };
-        if (window.__doc_id__) return { documentId: window.__doc_id__ };
+        if (pathMatch) return { type: pathMatch[1], documentId: pathMatch[2] };
+        if (window.__doc_id__) return { type: 'docx', documentId: window.__doc_id__ }; // 默认 docx
         return null;
       }
     });

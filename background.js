@@ -166,7 +166,7 @@ async function getAuthUrl(request) {
   const authUrl = `${apiEndpoint}/open-apis/authen/v1/authorize` +
     `?app_id=${config.appId}` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&scope=${encodeURIComponent('docs:document.content:read')}` +
+    `&scope=${encodeURIComponent('docs:document.content:read docs:document.comment:read')}` +
     `&state=${state}`;
 
   console.log('[OAuth] 生成授权 URL:', authUrl);
@@ -476,35 +476,114 @@ async function getWikiDocToken(nodeToken, spaceId, token, apiEndpoint) {
   }
 }
 
+// 解析富文本内容
+function parseRichText(content) {
+  if (!content) return '';
+  
+  // 1. 处理 JSON 字符串的情况
+  let contentObj = content;
+  if (typeof content === 'string') {
+    // 如果是纯文本且不以 { 开头，可能就是普通文本
+    if (!content.trim().startsWith('{')) {
+        return content;
+    }
+    try {
+      contentObj = JSON.parse(content);
+    } catch (e) {
+      // 解析失败，直接返回原字符串
+      return content;
+    }
+  }
+
+  // 2. 检查 elements 数组
+  if (!contentObj || !contentObj.elements) {
+      // 尝试直接获取 text 字段（某些旧接口）
+      if (contentObj.text) return contentObj.text;
+      return '';
+  }
+  
+  return contentObj.elements.map(el => {
+    switch (el.type) {
+      case 'text_run':
+        return el.text_run?.text || '';
+      case 'person':
+        return `@${el.person?.name || 'User'} `; // @某人
+      case 'docs_link':
+        return `[${el.docs_link?.title || 'Link'}](${el.docs_link?.url}) `; // 文档链接
+      case 'img': // 图片
+        return '[图片] ';
+      case 'file': // 文件附件
+        return `[文件: ${el.file?.title || 'Attachment'}] `;
+      case 'media': // 媒体
+        return '[媒体] ';
+      case 'equation': // 公式
+        return '[公式] ';
+      case 'reminder': // 提醒
+        return `[提醒: ${el.reminder?.create_time || ''}] `;
+      default:
+        // 尝试兜底获取 text 属性
+        return el.text_run?.text || '';
+    }
+  }).join('');
+}
+
 // ===== 获取文档评论 =====
 async function fetchComments(fileToken, fileType, token, apiEndpoint) {
   try {
     console.log('[Comments] 开始获取评论:', fileToken, fileType);
     
-    // 构建请求 URL
-    const url = `${apiEndpoint}/open-apis/drive/v1/files/${fileToken}/comments`;
-    const params = new URLSearchParams({
-      file_type: fileType,
-      page_size: 100 // 获取前100条评论
-    });
-
-    const response = await fetch(`${url}?${params}`, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = await response.json();
+    let allComments = [];
+    let pageToken = '';
+    let hasMore = true;
     
-    if (data.code !== 0) {
-      console.warn('[Comments] 获取评论失败:', data.msg);
-      return [];
+    // 循环分页获取
+    while (hasMore) {
+      // 构建请求 URL
+      const url = `${apiEndpoint}/open-apis/drive/v1/files/${fileToken}/comments`;
+      const params = new URLSearchParams({
+        file_type: fileType,
+        page_size: 100 // 每次获取100条
+      });
+      
+      if (pageToken) {
+        params.append('page_token', pageToken);
+      }
+
+      const response = await fetch(`${url}?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+      
+      if (data.code !== 0) {
+        console.warn('[Comments] 获取评论失败:', data.msg);
+        break; // 出错则停止
+      }
+
+      const items = data.data?.items || [];
+      allComments = allComments.concat(items);
+      
+      hasMore = data.data?.has_more;
+      pageToken = data.data?.page_token;
+      
+      console.log(`[Comments] 本页获取 ${items.length} 条，总计 ${allComments.length} 条`);
+      
+      // 安全限制：防止无限循环或内存过大
+      if (allComments.length >= 1000) {
+        console.warn('[Comments] 达到评论数限制 (1000)，停止获取');
+        break;
+      }
     }
 
-    const comments = data.data?.items || [];
-    console.log('[Comments] 获取到评论数:', comments.length);
-    return comments;
+    // 增加调试日志
+    console.log('[Comments] 获取完成，共:', allComments.length);
+    if (allComments.length > 0) {
+        console.log('[Comments] 第一条评论示例:', JSON.stringify(allComments[0]));
+    }
+    return allComments;
   } catch (error) {
     console.error('[Comments] 请求出错:', error);
     return [];
@@ -520,31 +599,49 @@ function formatComments(comments) {
   comments.forEach((comment, index) => {
     // 获取引用文本 (quote)
     const quote = comment.quote || '（无引用文本）';
-    // 获取评论内容 (content 是富文本，需要简单处理)
-    let content = '';
-    if (comment.content && comment.content.elements) {
-      content = comment.content.elements
-        .map(el => el.text_run?.text || '')
-        .join('');
-    }
     
-    // 获取回复
-    const replies = comment.replies || [];
+    // 解析评论内容
+    // 注意：顶层评论可能没有 content，只有 reply_list（第一条回复即为主评论内容）
+    // 飞书云文档评论接口返回的结构中，顶层对象通常没有 content 字段，
+    // 而是把第一条 reply 当作评论内容。
+    // 参考日志结构：{"comment_id":..., "reply_list":{"replies":[{ "content": ... }]}}
+    
+    let content = '';
+    const replies = comment.reply_list?.replies || comment.replies || [];
+    
+    // 尝试从顶层 content 获取（如果有）
+    if (comment.content) {
+        content = parseRichText(comment.content);
+    } 
+    // 如果顶层没有 content，尝试使用第一条回复作为主评论内容
+    // 实际上飞书 API 返回的 replies 数组中，第一条通常就是“评论本身”
+    else if (replies.length > 0) {
+        // 取第一条作为主内容
+        content = parseRichText(replies[0].content);
+        // 如果第一条被当作主内容使用了，后续展示回复时应该跳过它？
+        // 通常 UI 上是把整个 thread 展示出来。这里为了清晰，我们把第一条当作主楼。
+    }
+
+    if (!content) content = '（无内容）';
     
     md += `> **引用**: ${quote}\n\n`;
     md += `**评论 ${index + 1}**: ${content}\n`;
     
-    if (replies.length > 0) {
-      md += `\n*回复 (${replies.length})*:\n`;
-      replies.forEach(reply => {
-        let replyContent = '';
-        if (reply.content && reply.content.elements) {
-          replyContent = reply.content.elements
-            .map(el => el.text_run?.text || '')
-            .join('');
-        }
+    // 处理回复（从第二条开始，或者全部列出）
+    // 策略：如果主内容是从 replies[0] 取的，那么回复列表应该从 replies[1] 开始
+    let replyStartIndex = 0;
+    if (!comment.content && replies.length > 0) {
+        replyStartIndex = 1;
+    }
+    
+    if (replies.length > replyStartIndex) {
+      md += `\n*回复 (${replies.length - replyStartIndex})*:\n`;
+      for (let i = replyStartIndex; i < replies.length; i++) {
+        const reply = replies[i];
+        let replyContent = parseRichText(reply.content);
+        if (!replyContent) replyContent = '（无内容）';
         md += `- ${replyContent}\n`;
-      });
+      }
     }
     md += '\n---\n';
   });
@@ -554,7 +651,7 @@ function formatComments(comments) {
 
 // ===== 获取文档内容 - 智能判断文档类型 =====
 async function fetchDocumentContent(request) {
-  const { documentId, appId, appSecret, domain } = request;
+  const { documentId, appId, appSecret, domain, docType: requestDocType } = request;
 
   try {
     // 判断区域和API端点
@@ -607,6 +704,15 @@ async function fetchDocumentContent(request) {
     // ===== 判断文档类型 =====
     let finalDocId = documentId;
     let docType = 'docx';
+
+    // 优先使用前端传入的类型（如果有）
+    if (requestDocType) {
+        // 映射 URL 类型到 API 类型
+        if (requestDocType === 'docs') docType = 'doc';
+        else if (requestDocType === 'sheets') docType = 'sheet';
+        else if (requestDocType === 'bitable') docType = 'bitable'; // 注意：API 可能不支持
+        else docType = requestDocType;
+    }
 
     // 检查是否是 Wiki 文档
     if (domain && domain.includes('/wiki/')) {
@@ -685,6 +791,7 @@ async function fetchDocumentContent(request) {
     
     if (comments.length > 0) {
       const commentsMd = formatComments(comments);
+      console.log('[Fetch] 格式化后的评论 MD:', commentsMd);
       // 将评论插入到文档头部
       fullContent = commentsMd + fullContent;
       console.log('[Fetch] 已合并评论到文档头部');
@@ -692,10 +799,11 @@ async function fetchDocumentContent(request) {
       console.log('[Fetch] 无评论或获取评论失败');
     }
 
+    // 关键修复：确保返回的是合并后的 fullContent
     return {
       success: true,
       documentId: finalDocId,
-      content: fullContent,
+      content: fullContent, // 确保这里使用的是合并了评论的 fullContent
       region: region,
       tokenType: tokenType,
       docType: docType
