@@ -17,6 +17,20 @@ let aiConfig = {
   prompts: []
 };
 
+// 会话相关变量
+let currentSession = {
+  id: '',
+  docUrl: '',
+  docTitle: '',
+  messages: [],
+  documentContent: '',
+  documentRawData: null,
+  timestamp: Date.now()
+};
+
+// 历史记录
+let sessionHistory = [];
+
 
 
 // 默认 Prompt 配置
@@ -54,7 +68,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateSelectionUI(storage.selectedText);
   }
 
-  // 6. 尝试动态注入 selection_listener.js
+  // 6. 加载保存的会话
+  await loadSavedSession();
+
+  // 7. 尝试动态注入 selection_listener.js
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && (tab.url.includes('feishu.cn') || tab.url.includes('larksuite.com'))) {
@@ -71,8 +88,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ===== 事件绑定 =====
 function bindEventListeners() {
   // 顶部栏
+  document.getElementById('newSessionBtn').addEventListener('click', createNewSession);
   document.getElementById('fetchContent').addEventListener('click', fetchDocumentContent);
   document.getElementById('downloadMdBtn').addEventListener('click', downloadMarkdown);
+  document.getElementById('historyBtn').addEventListener('click', showHistory);
   document.getElementById('openSettings').addEventListener('click', () => toggleModal('settingsModal', true));
   
   // 设置模态框
@@ -391,44 +410,47 @@ async function fetchDocumentContent() {
     });
 
     if (response.success) {
-      documentContent = response.content;
-      documentRawData = response;
-      
-      // 提取并显示文档标题
-      let docTitle = '未知文档';
-      if (response.title) {
-        docTitle = response.title;
-      } else if (response.content) {
-        // 从内容中提取标题（如果没有直接提供）
-        const titleMatch = response.content.match(/^#\s+(.*)$/m);
-        if (titleMatch) {
-          docTitle = titleMatch[1];
+        documentContent = response.content;
+        documentRawData = response;
+        
+        // 提取并显示文档标题
+        let docTitle = '未知文档';
+        if (response.title) {
+          docTitle = response.title;
+        } else if (response.content) {
+          // 从内容中提取标题（如果没有直接提供）
+          const titleMatch = response.content.match(/^#\s+(.*)$/m);
+          if (titleMatch) {
+            docTitle = titleMatch[1];
+          }
         }
-      }
-      
-      // 显示文档标题，限定前20字
-      const docTitleElement = document.getElementById('docTitle');
-      const docTitleSection = document.getElementById('docTitleSection');
-      if (docTitleElement && docTitleSection) {
-        docTitleElement.textContent = docTitle.length > 20 ? docTitle.substring(0, 20) + '...' : docTitle;
-        docTitleElement.title = docTitle;
-        docTitleSection.classList.remove('hidden');
-      }
-      
-      updateDocStatus('doc', 'success');
-      if (response.content.includes('### 📝 文档评论')) {
-        updateDocStatus('comment', 'success');
+        
+        // 显示文档标题，限定前20字
+        const docTitleElement = document.getElementById('docTitle');
+        const docTitleSection = document.getElementById('docTitleSection');
+        if (docTitleElement && docTitleSection) {
+          docTitleElement.textContent = docTitle.length > 20 ? docTitle.substring(0, 20) + '...' : docTitle;
+          docTitleElement.title = docTitle;
+          docTitleSection.classList.remove('hidden');
+        }
+        
+        updateDocStatus('doc', 'success');
+        if (response.content.includes('### 📝 文档评论')) {
+          updateDocStatus('comment', 'success');
+        } else {
+          updateDocStatus('comment', 'none');
+        }
+        
+        document.getElementById('downloadMdBtn').classList.remove('hidden');
+        appendSystemMessage(`✅ 文档获取成功！共 ${response.content.length} 字。现在可以使用 AI 功能了。`);
+        
+        // 保存会话
+        await saveSession();
       } else {
-        updateDocStatus('comment', 'none');
+        updateDocStatus('doc', 'error');
+        updateDocStatus('comment', 'error');
+        showError(response.error);
       }
-      
-      document.getElementById('downloadMdBtn').classList.remove('hidden');
-      appendSystemMessage(`✅ 文档获取成功！共 ${response.content.length} 字。现在可以使用 AI 功能了。`);
-    } else {
-      updateDocStatus('doc', 'error');
-      updateDocStatus('comment', 'error');
-      showError(response.error);
-    }
   } catch (error) {
     updateDocStatus('doc', 'error');
     updateDocStatus('comment', 'error');
@@ -484,6 +506,8 @@ async function handleActionClick(promptId) {
   const sourceLabel = selectedContent ? '【选中内容】' : '';
   appendUserMessage(`【${promptConfig.name}】${sourceLabel}`);
   await callAIService(fullPrompt);
+  // 保存会话
+  await saveSession();
 }
 
 function handleSendOrStop() {
@@ -551,6 +575,8 @@ async function handleSendMessage() {
   }
   
   await callAIService(prompt);
+  // 保存会话
+  await saveSession();
 }
 
 // 调用 AI 服务
@@ -1137,6 +1163,286 @@ function toggleModal(id, show) {
   document.getElementById(id).classList.toggle('hidden', !show);
   // Reset tab to AI when opening
   if(show) switchTab('tab-ai');
+}
+
+// ===== 会话管理 =====
+async function saveSession() {
+  try {
+    // 收集当前消息
+    const messages = [];
+    const messageElements = document.querySelectorAll('#chatMessages .message');
+    messageElements.forEach((el, index) => {
+      if (index === 0) return; // 跳过系统欢迎消息
+      const role = el.classList.contains('user') ? 'user' : el.classList.contains('ai') ? 'ai' : 'system';
+      const content = el.querySelector('.message-content')?.textContent || el.textContent;
+      messages.push({ role, content });
+    });
+
+    // 更新当前会话信息
+    currentSession = {
+      id: currentSession.id || `session_${Date.now()}`,
+      docUrl: documentRawData?.url || '',
+      docTitle: document.getElementById('docTitle')?.textContent || '',
+      messages: messages,
+      documentContent: documentContent,
+      documentRawData: documentRawData,
+      timestamp: Date.now()
+    };
+
+    // 保存到本地存储
+    await chrome.storage.local.set({ currentSession });
+    
+    // 同时以会话ID为键保存完整会话数据
+    const sessionData = {};
+    sessionData[currentSession.id] = currentSession;
+    await chrome.storage.local.set(sessionData);
+    
+    // 更新历史记录
+    await updateSessionHistory();
+    
+    console.log('会话已保存:', currentSession.id);
+  } catch (error) {
+    console.error('保存会话失败:', error);
+  }
+}
+
+async function updateSessionHistory() {
+  try {
+    // 获取现有的历史记录
+    const storage = await chrome.storage.local.get(['sessionHistory']);
+    sessionHistory = storage.sessionHistory || [];
+    
+    // 检查当前会话是否已存在于历史记录中
+    const existingIndex = sessionHistory.findIndex(session => session.id === currentSession.id);
+    
+    // 构建历史记录项（只保存必要信息）
+    const historyItem = {
+      id: currentSession.id,
+      docTitle: currentSession.docTitle,
+      docUrl: currentSession.docUrl,
+      messageCount: currentSession.messages.length,
+      timestamp: currentSession.timestamp
+    };
+    
+    if (existingIndex >= 0) {
+      // 更新现有记录
+      sessionHistory[existingIndex] = historyItem;
+    } else {
+      // 添加新记录
+      sessionHistory.push(historyItem);
+    }
+    
+    // 按时间戳排序，最新的在前
+    sessionHistory.sort((a, b) => b.timestamp - a.timestamp);
+    
+    // 限制历史记录数量（最多保存20条）
+    if (sessionHistory.length > 20) {
+      sessionHistory = sessionHistory.slice(0, 20);
+    }
+    
+    // 保存历史记录
+    await chrome.storage.local.set({ sessionHistory });
+    sessionHistory = sessionHistory;
+    console.log('历史记录已更新，共', sessionHistory.length, '条');
+  } catch (error) {
+    console.error('更新历史记录失败:', error);
+  }
+}
+
+async function loadSavedSession() {
+  try {
+    const storage = await chrome.storage.local.get(['currentSession', 'sessionHistory']);
+    if (storage.currentSession) {
+      currentSession = storage.currentSession;
+      documentContent = currentSession.documentContent || '';
+      documentRawData = currentSession.documentRawData || null;
+
+      // 恢复文档标题和状态
+      if (currentSession.docTitle) {
+        document.getElementById('docTitle').textContent = currentSession.docTitle;
+        document.getElementById('docTitleSection').classList.remove('hidden');
+      }
+
+      // 恢复消息
+      const chatMessages = document.getElementById('chatMessages');
+      chatMessages.innerHTML = ''; // 清空现有消息
+      
+      // 添加欢迎消息
+      const welcomeDiv = document.createElement('div');
+      welcomeDiv.className = 'message system';
+      welcomeDiv.innerHTML = '<div class="message-content">👋 欢迎！点击左上角获取文档，然后开始对话。</div>';
+      chatMessages.appendChild(welcomeDiv);
+
+      // 恢复保存的消息
+      currentSession.messages.forEach(msg => {
+        if (msg.role === 'user') {
+          appendUserMessage(msg.content);
+        } else if (msg.role === 'ai') {
+          appendAIMessage(msg.content);
+        } else if (msg.role === 'system') {
+          appendSystemMessage(msg.content);
+        }
+      });
+
+      // 恢复文档状态图标
+      if (documentContent) {
+        updateDocStatus('doc', 'success');
+        if (documentContent.includes('### 📝 文档评论')) {
+          updateDocStatus('comment', 'success');
+        } else {
+          updateDocStatus('comment', 'none');
+        }
+        document.getElementById('downloadMdBtn').classList.remove('hidden');
+      }
+
+      console.log('会话已加载:', currentSession.id);
+    }
+
+    // 加载历史记录
+    if (storage.sessionHistory) {
+      sessionHistory = storage.sessionHistory;
+      console.log('历史记录已加载，共', sessionHistory.length, '条');
+    }
+  } catch (error) {
+    console.error('加载会话失败:', error);
+  }
+}
+
+async function createNewSession() {
+  // 清空会话数据
+  currentSession = {
+    id: `session_${Date.now()}`,
+    docUrl: '',
+    docTitle: '',
+    messages: [],
+    documentContent: '',
+    documentRawData: null,
+    timestamp: Date.now()
+  };
+
+  // 清空UI
+  documentContent = '';
+  documentRawData = null;
+  document.getElementById('chatMessages').innerHTML = '';
+  document.getElementById('docTitleSection').classList.add('hidden');
+  document.getElementById('docStatusSection').classList.add('hidden');
+  document.getElementById('downloadMdBtn').classList.add('hidden');
+
+  // 添加欢迎消息
+  const welcomeDiv = document.createElement('div');
+  welcomeDiv.className = 'message system';
+  welcomeDiv.innerHTML = '<div class="message-content">👋 欢迎！点击左上角获取文档，然后开始对话。</div>';
+  document.getElementById('chatMessages').appendChild(welcomeDiv);
+
+  // 保存新会话
+  await saveSession();
+  console.log('新会话已创建:', currentSession.id);
+}
+
+async function showHistory() {
+  try {
+    // 获取历史记录
+    const storage = await chrome.storage.local.get(['sessionHistory']);
+    const history = storage.sessionHistory || [];
+    
+    // 创建历史记录模态框
+    const modal = document.createElement('div');
+    modal.id = 'historyModal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+      <div class="modal-content" style="width: 90%; max-width: 500px; max-height: 80vh;">
+        <div class="modal-header">
+          <h2>历史记录</h2>
+          <button class="close-btn" id="closeHistoryModal">×</button>
+        </div>
+        <div class="modal-body" style="max-height: 60vh; overflow-y: auto;">
+          ${history.length > 0 ? '' : '<div style="text-align: center; color: #888; padding: 20px;">暂无历史记录</div>'}
+          ${history.map(session => `
+            <div class="history-item" data-session-id="${session.id}" style="padding: 12px; border-bottom: 1px solid #eee; cursor: pointer;">
+              <div style="font-weight: 500; margin-bottom: 4px;">${session.docTitle || '无标题文档'}</div>
+              <div style="font-size: 12px; color: #888; margin-bottom: 4px;">
+                ${session.docUrl ? `<a href="${session.docUrl}" target="_blank" style="color: #1890ff; text-decoration: none;">${session.docUrl}</a>` : '无文档链接'}
+              </div>
+              <div style="font-size: 11px; color: #aaa;">
+                ${new Date(session.timestamp).toLocaleString()} · ${session.messageCount} 条消息
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    
+    // 添加到页面
+    document.body.appendChild(modal);
+    
+    // 绑定关闭事件
+    document.getElementById('closeHistoryModal').addEventListener('click', () => {
+      modal.remove();
+    });
+    
+    // 绑定历史记录项点击事件
+    history.forEach(session => {
+      const item = document.querySelector(`.history-item[data-session-id="${session.id}"]`);
+      if (item) {
+        item.addEventListener('click', async () => {
+          // 从本地存储中获取完整的会话数据
+          const sessionStorage = await chrome.storage.local.get([session.id]);
+          if (sessionStorage[session.id]) {
+            // 恢复会话
+            currentSession = sessionStorage[session.id];
+            documentContent = currentSession.documentContent || '';
+            documentRawData = currentSession.documentRawData || null;
+            
+            // 恢复UI
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.innerHTML = '';
+            
+            // 添加欢迎消息
+            const welcomeDiv = document.createElement('div');
+            welcomeDiv.className = 'message system';
+            welcomeDiv.innerHTML = '<div class="message-content">👋 欢迎！点击左上角获取文档，然后开始对话。</div>';
+            chatMessages.appendChild(welcomeDiv);
+            
+            // 恢复消息
+            currentSession.messages.forEach(msg => {
+              if (msg.role === 'user') {
+                appendUserMessage(msg.content);
+              } else if (msg.role === 'ai') {
+                appendAIMessage(msg.content);
+              } else if (msg.role === 'system') {
+                appendSystemMessage(msg.content);
+              }
+            });
+            
+            // 恢复文档标题和状态
+            if (currentSession.docTitle) {
+              document.getElementById('docTitle').textContent = currentSession.docTitle;
+              document.getElementById('docTitleSection').classList.remove('hidden');
+            }
+            
+            if (documentContent) {
+              updateDocStatus('doc', 'success');
+              if (documentContent.includes('### 📝 文档评论')) {
+                updateDocStatus('comment', 'success');
+              } else {
+                updateDocStatus('comment', 'none');
+              }
+              document.getElementById('downloadMdBtn').classList.remove('hidden');
+            }
+            
+            // 关闭模态框
+            modal.remove();
+            
+            console.log('历史会话已恢复:', session.id);
+          } else {
+            console.error('未找到会话数据:', session.id);
+          }
+        });
+      }
+    });
+  } catch (error) {
+    console.error('显示历史记录失败:', error);
+  }
 }
 
 function downloadMarkdown() {
