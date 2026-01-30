@@ -14,6 +14,11 @@
         <span class="btn-icon">📥</span> 获取文档
       </button>
       
+      <div id="docTitleSection" class="doc-title hidden">
+        <span class="title-label">当前文档:</span>
+        <span id="docTitle" class="title-text" title="文档标题"></span>
+      </div>
+      
       <div id="docStatusSection" class="doc-status hidden">
         <span class="status-item" title="正文状态"><span id="docStatusIcon">⚪</span> 文</span>
         <span class="status-item" title="评论状态"><span id="commentStatusIcon">⚪</span> 评</span>
@@ -78,6 +83,7 @@
         <button class="tab-btn active" data-tab="tab-ai">🤖 AI 模型</button>
         <button class="tab-btn" data-tab="tab-feishu">📄 飞书配置</button>
         <button class="tab-btn" data-tab="tab-prompts">⚡️ 快捷指令</button>
+        <button class="tab-btn" data-tab="tab-download">📥 下载设置</button>
       </div>
 
       <div class="modal-body">
@@ -154,6 +160,21 @@
             <!-- Dynamic Content -->
           </div>
           <button id="addPromptBtn" class="btn btn-outline btn-small" style="width:100%; margin-top:10px;">+ 添加新指令 (最多20个)</button>
+        </div>
+
+        <!-- Tab 4: 下载设置 -->
+        <div id="tab-download" class="tab-content">
+          <div class="input-group">
+            <label>保存文件夹:</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="saveFolder" placeholder="选择保存文件夹" style="flex: 1;" readonly />
+              <button id="browseFolder" class="btn btn-small btn-outline">浏览</button>
+            </div>
+          </div>
+          <div class="section-title-small" style="margin-top: 15px;">📁 下载设置</div>
+          <div class="input-group">
+            <label><input type="checkbox" id="overwriteExisting" checked /> 覆盖已存在的文件</label>
+          </div>
         </div>
       </div>
 

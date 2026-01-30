@@ -17,6 +17,11 @@ let aiConfig = {
   prompts: []
 };
 
+let downloadConfig = {
+  saveFolder: '',
+  overwriteExisting: true
+};
+
 // 默认 Prompt 配置
 const DEFAULT_PROMPTS = [
   { name: "总结文档", template: "请简要总结这篇文档的主要内容。\n\n文档内容：\n{{context}}" },
@@ -34,6 +39,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 1. 初始化设置与配置
   await loadAIConfig();
   await loadConfig(); // 飞书配置
+  await loadDownloadConfig(); // 下载设置
   
   // 2. 绑定事件监听器
   bindEventListeners();
@@ -76,6 +82,7 @@ function bindEventListeners() {
   document.getElementById('closeSettings').addEventListener('click', () => toggleModal('settingsModal', false));
   document.getElementById('saveSettings').addEventListener('click', saveAISettings);
   document.getElementById('addPromptBtn').addEventListener('click', handleAddPrompt);
+  document.getElementById('browseFolder').addEventListener('click', handleBrowseFolder);
   
   // Tab 切换
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -177,6 +184,54 @@ function updateGeminiModeToggle() {
   const isGemini = aiConfig.model === 'gemini';
   toggle.classList.toggle('hidden', !isGemini);
   if (isGemini) toggle.textContent = getGeminiModeLabel();
+}
+
+// ===== 下载设置管理 =====
+async function loadDownloadConfig() {
+  const data = await chrome.storage.local.get(['downloadConfig']);
+  if (data.downloadConfig) {
+    downloadConfig = { ...downloadConfig, ...data.downloadConfig };
+  }
+  
+  // 确保默认值
+  if (downloadConfig.overwriteExisting === undefined) {
+    downloadConfig.overwriteExisting = true;
+  }
+  
+  // 填充 UI
+  const saveFolderInput = document.getElementById('saveFolder');
+  if (saveFolderInput) {
+    saveFolderInput.value = downloadConfig.saveFolder || '';
+    saveFolderInput.readOnly = false;
+    saveFolderInput.style.backgroundColor = '#ffffff';
+    saveFolderInput.style.cursor = 'text';
+    
+    // 添加change事件监听器，当用户输入路径后自动保存
+    saveFolderInput.addEventListener('change', function() {
+      const folderPath = this.value.trim();
+      if (folderPath) {
+        downloadConfig.saveFolder = folderPath;
+        chrome.storage.local.set({ downloadConfig });
+        showError('保存文件夹已更新: ' + folderPath);
+      }
+    });
+  }
+  
+  document.getElementById('overwriteExisting').checked = downloadConfig.overwriteExisting;
+}
+
+function handleBrowseFolder() {
+  // 简化方案：让用户直接在输入框中输入保存路径
+  // 点击浏览按钮时，提示用户直接输入路径
+  showError('请直接在输入框中输入保存路径，例如: /Users/yourname/Downloads');
+  
+  // 确保输入框是可编辑的
+  const saveFolderInput = document.getElementById('saveFolder');
+  if (saveFolderInput) {
+    saveFolderInput.readOnly = false;
+    saveFolderInput.style.backgroundColor = '#ffffff';
+    saveFolderInput.style.cursor = 'text';
+  }
 }
 
 function setGeminiModelName(name) {
@@ -316,6 +371,14 @@ async function saveAISettings() {
     await chrome.storage.local.set({ appId, appSecret });
   }
   
+  // 保存下载设置
+  const newDownloadConfig = {
+    saveFolder: document.getElementById('saveFolder').value.trim(),
+    overwriteExisting: document.getElementById('overwriteExisting').checked
+  };
+  downloadConfig = newDownloadConfig;
+  await chrome.storage.local.set({ downloadConfig });
+  
   updateActionButtons();
   toggleModal('settingsModal', false);
 }
@@ -384,6 +447,27 @@ async function fetchDocumentContent() {
     if (response.success) {
       documentContent = response.content;
       documentRawData = response;
+      
+      // 提取并显示文档标题
+      let docTitle = '未知文档';
+      if (response.title) {
+        docTitle = response.title;
+      } else if (response.content) {
+        // 从内容中提取标题（如果没有直接提供）
+        const titleMatch = response.content.match(/^#\s+(.*)$/m);
+        if (titleMatch) {
+          docTitle = titleMatch[1];
+        }
+      }
+      
+      // 显示文档标题，限定前20字
+      const docTitleElement = document.getElementById('docTitle');
+      const docTitleSection = document.getElementById('docTitleSection');
+      if (docTitleElement && docTitleSection) {
+        docTitleElement.textContent = docTitle.length > 20 ? docTitle.substring(0, 20) + '...' : docTitle;
+        docTitleElement.title = docTitle;
+        docTitleSection.classList.remove('hidden');
+      }
       
       updateDocStatus('doc', 'success');
       if (response.content.includes('### 📝 文档评论')) {
@@ -1109,14 +1193,153 @@ function toggleModal(id, show) {
 
 function downloadMarkdown() {
   if (!documentContent) return;
-  const blob = new Blob([documentContent], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `feishu_doc_${Date.now()}.md`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  
+  // 获取对话记录并格式化为表格
+  const chatTable = generateChatTable();
+  
+  // 获取文档URL
+  let docUrl = '';
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs && tabs[0]) {
+      docUrl = tabs[0].url;
+      
+      // 构建文件内容
+      let fileContent = '';
+      
+      // 在顶部添加文档URL
+      if (docUrl) {
+        fileContent += `# 文档信息\n\n`;
+        fileContent += `## 文档链接\n`;
+        fileContent += `${docUrl}\n\n`;
+      }
+      
+      // 提取并添加图片URL
+      const imageUrls = extractImageUrls(documentContent);
+      if (imageUrls.length > 0) {
+        fileContent += `## 图片链接\n`;
+        imageUrls.forEach((url, index) => {
+          fileContent += `${index + 1}. ${url}\n`;
+        });
+        fileContent += '\n';
+      }
+      
+      // 添加对话记录表格
+      fileContent += chatTable + '\n\n';
+      
+      // 添加文档内容
+      fileContent += documentContent;
+      
+      // 生成文件名，使用文档ID或时间戳确保唯一性
+      let fileName = `feishu_doc`;
+      if (documentRawData && documentRawData.documentId) {
+        fileName = `feishu_doc_${documentRawData.documentId}`;
+      } else {
+        fileName = `feishu_doc_${Date.now()}`;
+      }
+      fileName += '.md';
+      
+      // 创建Blob对象
+      const blob = new Blob([fileContent], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      
+      // 检查是否设置了保存文件夹
+      if (downloadConfig.saveFolder) {
+        // 尝试使用Chrome的downloads API直接保存到指定路径
+        // 注意：Chrome扩展的downloads API的filename参数只能是相对路径，不能是绝对路径
+        // 但是我们可以尝试使用相对路径，并在下载开始后修改路径
+        
+        // 注册下载文件名确定事件监听器
+        chrome.downloads.onDeterminingFilename.addListener(function onDeterminingFilename(item, suggest) {
+          if (item.url === url) {
+            // 构建完整的文件路径
+            const fullPath = downloadConfig.saveFolder + '/' + fileName;
+            suggest({
+              filename: fullPath,
+              conflictAction: downloadConfig.overwriteExisting ? 'overwrite' : 'uniquify'
+            });
+            // 移除监听器
+            chrome.downloads.onDeterminingFilename.removeListener(onDeterminingFilename);
+          }
+        });
+        
+        // 开始下载
+        chrome.downloads.download({
+          url: url,
+          filename: fileName, // 只使用文件名，不包含路径
+          saveAs: false, // 不显示保存对话框
+          conflictAction: downloadConfig.overwriteExisting ? 'overwrite' : 'uniquify'
+        }, (downloadId) => {
+          if (chrome.runtime.lastError) {
+            console.error('下载失败:', chrome.runtime.lastError);
+            showError('下载失败: ' + chrome.runtime.lastError.message);
+          } else {
+            console.log('下载开始，ID:', downloadId);
+            showError('文件正在下载到: ' + downloadConfig.saveFolder);
+          }
+        });
+      } else {
+        // 如果没有设置保存文件夹，显示保存对话框
+        chrome.downloads.download({
+          url: url,
+          filename: fileName, // 只使用文件名，不包含路径
+          saveAs: true, // 显示保存对话框，让用户选择保存位置
+          conflictAction: downloadConfig.overwriteExisting ? 'overwrite' : 'uniquify'
+        }, (downloadId) => {
+          if (chrome.runtime.lastError) {
+            console.error('下载失败:', chrome.runtime.lastError);
+            showError('下载失败: ' + chrome.runtime.lastError.message);
+          } else {
+            console.log('下载开始，ID:', downloadId);
+            showError('下载开始，请在弹出的对话框中选择保存位置');
+          }
+        });
+      }
+    }
+  });
+}
+
+function extractImageUrls(content) {
+  if (!content) return [];
+  
+  // 正则表达式匹配Markdown中的图片格式：![alt text](image url)
+  const imageRegex = /!\[.*?\]\((.*?)\)/g;
+  const urls = [];
+  let match;
+  
+  while ((match = imageRegex.exec(content)) !== null) {
+    urls.push(match[1]);
+  }
+  
+  return urls;
+}
+
+function generateChatTable() {
+  const messages = document.querySelectorAll('#chatMessages .message');
+  if (messages.length <= 1) { // 只有系统欢迎消息
+    return `## 对话记录\n\n| 时间 | 角色 | 内容 |\n|------|------|------|\n| ${new Date().toLocaleString()} | 系统 | 无对话记录 |`;
+  }
+  
+  let table = `## 对话记录\n\n| 时间 | 角色 | 内容 |\n|------|------|------|`;
+  
+  messages.forEach((message, index) => {
+    if (index === 0) return; // 跳过系统欢迎消息
+    
+    const role = message.classList.contains('user') ? '用户' : 'AI';
+    // 获取消息内容，优先从message-content元素获取
+    const contentElement = message.querySelector('.message-content');
+    let content = contentElement ? contentElement.textContent.trim() : message.textContent.trim();
+    // 替换换行符为空格，保持表格美观
+    content = content.replace(/\n/g, ' ');
+    // 限制内容长度，确保表格不会过长
+    if (content.length > 200) {
+      content = content.substring(0, 200) + '...';
+    }
+    const time = new Date().toLocaleString();
+    
+    table += `\n| ${time} | ${role} | ${content} |`;
+  });
+  
+  return table;
 }
 
 function handleStorageChange(changes, namespace) {

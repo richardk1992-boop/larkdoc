@@ -8,7 +8,8 @@
     "storage",
     "scripting",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "downloads"
   ],
   "host_permissions": [
     "https://*.feishu.cn/*",
