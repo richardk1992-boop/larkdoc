@@ -594,10 +594,24 @@ async function callAIService(prompt) {
   updateUIState(true);
   
   try {
+    // 构建完整的对话历史
+    const messages = [];
+    
+    // 从currentSession.messages中获取历史消息，确保只包含本次对话窗口的内容
+    currentSession.messages.forEach(msg => {
+      messages.push({
+        role: msg.role,
+        content: msg.content
+      });
+    });
+    
+    // 添加当前用户消息
+    messages.push({ role: 'user', content: prompt });
+    
     const requestBody = {
       model: aiConfig.model,
       apiKey: aiConfig.apiKey,
-      messages: [{ role: 'user', content: prompt }],
+      messages: messages,
       signal: currentAbortController.signal // 传入 signal
     };
     
