@@ -700,6 +700,7 @@ async function fetchDocumentContent(request) {
     // ===== 判断文档类型 =====
     let finalDocId = documentId;
     let docType = 'docx';
+    let wikiInfo = null;
 
     // 优先使用前端传入的类型（如果有）
     if (requestDocType) {
@@ -715,7 +716,7 @@ async function fetchDocumentContent(request) {
       console.log('[Fetch] 检测到 Wiki 文档，需要获取真实 token');
 
       // 获取 Wiki 节点信息（使用飞书文档推荐的 API）
-      const wikiInfo = await getWikiDocToken(documentId, null, token, apiEndpoint);
+      wikiInfo = await getWikiDocToken(documentId, null, token, apiEndpoint);
       finalDocId = wikiInfo.objToken;
       docType = wikiInfo.objType || 'docx';
 
@@ -751,6 +752,7 @@ async function fetchDocumentContent(request) {
 
     const data = await response.json();
     console.log('[Fetch] 响应码:', data.code);
+    console.log('[Fetch] 响应数据:', data);
 
     if (data.code !== 0) {
       let errorMsg = `获取文档失败: ${data.msg} (code: ${data.code})`;
@@ -796,13 +798,45 @@ async function fetchDocumentContent(request) {
     }
 
     // 关键修复：确保返回的是合并后的 fullContent
+    // 提取文档标题
+    let title = '';
+    // 尝试从Wiki信息中获取标题
+    if (wikiInfo && wikiInfo.title) {
+      title = wikiInfo.title;
+    }
+    // 尝试从文档内容中提取标题
+    else if (fullContent) {
+      // 尝试匹配一级标题
+      const titleMatch = fullContent.match(/^#\s+(.*)$/m);
+      if (titleMatch) {
+        title = titleMatch[1].trim();
+      } else {
+        // 如果没有一级标题，尝试匹配二级标题
+        const h2Match = fullContent.match(/^##\s+(.*)$/m);
+        if (h2Match) {
+          title = h2Match[1].trim();
+        }
+      }
+    }
+    console.log('[Fetch] 提取的文档标题:', title);
+    
+    // 构建文档的真实URL
+    let docUrl = domain;
+    // 如果是Wiki文档，尝试构建更准确的URL
+    if (domain && domain.includes('/wiki/') && finalDocId) {
+      // 保留原始的Wiki URL
+      docUrl = domain;
+    }
+    
     return {
       success: true,
       documentId: finalDocId,
       content: fullContent, // 确保这里使用的是合并了评论的 fullContent
       region: region,
       tokenType: tokenType,
-      docType: docType
+      docType: docType,
+      title: title,
+      url: docUrl
     };
 
   } catch (error) {
