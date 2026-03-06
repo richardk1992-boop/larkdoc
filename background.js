@@ -645,6 +645,737 @@ function formatComments(comments) {
   return md;
 }
 
+// ===== Blocks API 辅助函数 =====
+
+// 根据 block_type 获取块的内容对象（不同类型块的内容字段名不同）
+function getBlockContent(block) {
+  switch (block.block_type) {
+    case 1:  return block.page;
+    case 2:  return block.text;
+    case 3:  return block.heading1;
+    case 4:  return block.heading2;
+    case 5:  return block.heading3;
+    case 6:  return block.heading4;
+    case 7:  return block.heading5;
+    case 8:  return block.heading6;
+    case 9:  return block.heading7;
+    case 10: return block.heading8;
+    case 11: return block.heading9;
+    case 12: return block.bullet;
+    case 13: return block.ordered;
+    case 14: return block.code;
+    case 15: return block.quote;
+    case 16: return block.equation;
+    case 17: return block.todo;
+    case 18: return block.bitable;
+    case 19: return block.callout;
+    case 27: return block.image;
+    case 30: return block.sheet;
+    case 31: return block.table;
+    case 32: return block.table_cell;
+    default: return block.text; // 兜底尝试 text
+  }
+}
+
+// 代码块语言枚举映射
+const CODE_LANGUAGES = {
+  1: 'plaintext', 2: 'abap', 3: 'ada', 4: 'apache', 5: 'apex',
+  6: 'assembly', 7: 'bash', 8: 'basic', 9: 'bnf', 10: 'c',
+  11: 'clojure', 12: 'cmake', 13: 'coffeescript', 14: 'cpp', 15: 'csharp',
+  16: 'css', 17: 'dart', 18: 'd', 19: 'delphi', 20: 'django',
+  21: 'dockerfile', 22: 'elixir', 23: 'elm', 24: 'erlang', 25: 'excel',
+  26: 'fortran', 27: 'fsharp', 28: 'gherkin', 29: 'glsl', 30: 'go',
+  31: 'graphql', 32: 'groovy', 33: 'haskell', 34: 'html', 35: 'http',
+  36: 'ini', 37: 'java', 38: 'javascript', 39: 'json', 40: 'julia',
+  41: 'kotlin', 42: 'latex', 43: 'less', 44: 'lisp', 45: 'logo',
+  46: 'lua', 47: 'makefile', 48: 'markdown', 49: 'matlab', 50: 'nginx',
+  51: 'nim', 52: 'objectivec', 53: 'ocaml', 54: 'pascal', 55: 'perl',
+  56: 'php', 57: 'powershell', 58: 'prolog', 59: 'protobuf', 60: 'python',
+  61: 'r', 62: 'ruby', 63: 'rust', 64: 'scala', 65: 'scheme',
+  66: 'scss', 67: 'shell', 68: 'sql', 69: 'swift', 70: 'tcl',
+  71: 'thrift', 72: 'typescript', 73: 'vbnet', 74: 'verilog', 75: 'vhdl',
+  76: 'visual-basic', 77: 'vue', 78: 'wasm', 79: 'xml', 80: 'yaml',
+  81: 'zig'
+};
+
+// 获取代码语言名称
+function getCodeLanguageName(langId) {
+  return CODE_LANGUAGES[langId] || '';
+}
+
+// 将文本元素数组转换为带格式的 Markdown 文本
+function renderTextElements(elements) {
+  if (!elements || elements.length === 0) return '';
+
+  return elements.map(el => {
+    // 文本运行（带样式）
+    if (el.text_run) {
+      let text = el.text_run.content || '';
+      if (!text) return '';
+      const style = el.text_run.text_element_style || {};
+
+      // inline_code 优先且互斥
+      if (style.inline_code) {
+        text = '`' + text + '`';
+      } else {
+        // 按嵌套顺序应用样式：strikethrough → bold → italic
+        if (style.strikethrough) text = '~~' + text + '~~';
+        if (style.bold) text = '**' + text + '**';
+        if (style.italic) text = '*' + text + '*';
+        // underline 无标准 markdown，使用 HTML
+        if (style.underline) text = '<u>' + text + '</u>';
+      }
+
+      // 链接包裹最外层
+      if (style.link && style.link.url) {
+        let url = style.link.url;
+        try { url = decodeURIComponent(url); } catch (e) { /* keep original */ }
+        text = '[' + text + '](' + url + ')';
+      }
+
+      return text;
+    }
+
+    // 文档提及
+    if (el.mention_doc) {
+      const title = el.mention_doc.title || '文档';
+      const url = el.mention_doc.url || '';
+      return url ? `[${title}](${url})` : title;
+    }
+
+    // 用户提及
+    if (el.mention_user) {
+      return `@${el.mention_user.user_id || 'user'}`;
+    }
+
+    // 公式（LaTeX）
+    if (el.equation) {
+      return '$' + (el.equation.content || '') + '$';
+    }
+
+    // 文件
+    if (el.file) {
+      return `[文件: ${el.file.name || '附件'}]`;
+    }
+
+    // 提醒
+    if (el.reminder) {
+      return '[提醒]';
+    }
+
+    return '';
+  }).join('');
+}
+
+// 递归收集某个块的所有子孙 block_id
+function collectDescendantIds(blockId, blockMap, ids) {
+  ids.add(blockId);
+  const block = blockMap.get(blockId);
+  if (block && block.children) {
+    block.children.forEach(childId => {
+      collectDescendantIds(childId, blockMap, ids);
+    });
+  }
+}
+
+// 递归渲染一个块及其所有子孙的文本内容（用于表格单元格等场景）
+function renderBlockRecursive(block, blockMap) {
+  if (!block) return '';
+  const content = getBlockContent(block);
+  let text = renderTextElements(content?.elements) || '';
+
+  // 递归渲染子块
+  if (block.children && block.children.length > 0) {
+    const childTexts = block.children.map(childId => {
+      const child = blockMap.get(childId);
+      return child ? renderBlockRecursive(child, blockMap) : '';
+    }).filter(Boolean);
+    if (childTexts.length > 0) {
+      text += (text ? ' ' : '') + childTexts.join(' ');
+    }
+  }
+
+  return text;
+}
+
+// 将 Table 块渲染为 Markdown 表格
+function renderTable(tableBlock, blockMap) {
+  // 获取表格维度 - 兼容不同 API 版本的字段路径
+  let rowCount = tableBlock.table?.property?.row_size
+    || tableBlock.table?.row_size || 0;
+  let colCount = tableBlock.table?.property?.column_size
+    || tableBlock.table?.column_size || 0;
+
+  // 获取单元格 ID - 优先使用 table.cells（保证行优先顺序），兜底使用 children
+  const cellIds = tableBlock.table?.cells || tableBlock.children || [];
+
+  // 如果缺少维度信息但有单元格数据，尝试推断
+  if ((rowCount === 0 || colCount === 0) && cellIds.length > 0) {
+    console.warn('[Table] 表格缺少维度信息, block_id:', tableBlock.block_id,
+      'cellIds:', cellIds.length, 'table:', JSON.stringify(tableBlock.table));
+    if (rowCount > 0 && colCount === 0) {
+      colCount = Math.ceil(cellIds.length / rowCount);
+    } else if (colCount > 0 && rowCount === 0) {
+      rowCount = Math.ceil(cellIds.length / colCount);
+    } else {
+      // 两个维度都未知，渲染为单列表格（至少展示内容）
+      colCount = 1;
+      rowCount = cellIds.length;
+    }
+  }
+
+  if (cellIds.length === 0) {
+    console.warn('[Table] 空表格, block_id:', tableBlock.block_id,
+      'table:', JSON.stringify(tableBlock.table),
+      'children:', JSON.stringify(tableBlock.children));
+    return '[空表格]';
+  }
+
+  // 构建二维单元格内容网格
+  const grid = [];
+  for (let r = 0; r < rowCount; r++) {
+    const row = [];
+    for (let c = 0; c < colCount; c++) {
+      const cellIndex = r * colCount + c;
+      if (cellIndex >= cellIds.length) {
+        row.push(' ');
+        continue;
+      }
+      const cellId = cellIds[cellIndex];
+      const cellBlock = cellId ? blockMap.get(cellId) : null;
+
+      // 递归渲染单元格内所有内容
+      let cellContent = '';
+      if (cellBlock) {
+        if (cellBlock.children && cellBlock.children.length > 0) {
+          const parts = cellBlock.children.map(childId => {
+            const child = blockMap.get(childId);
+            return child ? renderBlockRecursive(child, blockMap) : '';
+          }).filter(Boolean);
+          cellContent = parts.join(' ');
+        } else {
+          // 单元格可能直接包含文本内容（无 children）
+          const cellBlockContent = getBlockContent(cellBlock);
+          cellContent = renderTextElements(cellBlockContent?.elements) || '';
+        }
+      }
+
+      // 清理单元格内容（转义管道符，去除所有换行符）
+      cellContent = cellContent.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ').trim();
+      row.push(cellContent || ' ');
+    }
+    grid.push(row);
+  }
+
+  // 确保至少有一行数据
+  if (grid.length === 0) return '[空表格]';
+
+  // 构建 Markdown 表格
+  let md = '';
+  // 表头
+  md += '| ' + grid[0].join(' | ') + ' |\n';
+  // 分隔行
+  md += '| ' + grid[0].map(() => '---').join(' | ') + ' |\n';
+  // 数据行
+  for (let r = 1; r < grid.length; r++) {
+    md += '| ' + grid[r].join(' | ') + ' |\n';
+  }
+
+  return md;
+}
+
+// 核心转换器：将扁平块数组转换为 Markdown 字符串
+// sheetDataMap: 预获取的电子表格内容 Map<block_id, markdown_content>（可选）
+function blocksToMarkdown(allBlocks, sheetDataMap) {
+  if (!allBlocks || allBlocks.length === 0) return { markdown: '', title: '' };
+
+  // 构建 block_id → block 对象的查找表
+  const blockMap = new Map();
+  allBlocks.forEach(b => blockMap.set(b.block_id, b));
+
+  // 需要在主循环中跳过的块 ID（由 table 和 callout 内部处理）
+  const skipIds = new Set();
+
+  // 预扫描：递归标记 table 和 callout 的所有子孙块（在主循环中跳过）
+  allBlocks.forEach(b => {
+    if (b.block_type === 31) { // Table 普通表格 - 递归跳过所有子孙
+      const tableCellIds = b.table?.cells || b.children || [];
+      tableCellIds.forEach(cellId => {
+        collectDescendantIds(cellId, blockMap, skipIds);
+      });
+    }
+    if (b.block_type === 19 && b.children) { // Callout - 递归跳过所有子孙
+      b.children.forEach(childId => {
+        collectDescendantIds(childId, blockMap, skipIds);
+      });
+    }
+  });
+
+  // 有序列表计数器：parent_id → 当前计数
+  const orderedCounters = new Map();
+  let markdown = '';
+  let title = '';
+
+  for (const block of allBlocks) {
+    // 跳过被 table/callout 内部管理的块
+    if (skipIds.has(block.block_id)) continue;
+
+    const blockContent = getBlockContent(block);
+    const textContent = renderTextElements(blockContent?.elements);
+    const blockType = block.block_type;
+
+    // 计算列表缩进深度
+    let indent = '';
+    if (blockType === 12 || blockType === 13) {
+      let depth = 0;
+      let parentId = block.parent_id;
+      while (parentId) {
+        const parent = blockMap.get(parentId);
+        if (parent && (parent.block_type === 12 || parent.block_type === 13)) {
+          depth++;
+          parentId = parent.parent_id;
+        } else {
+          break;
+        }
+      }
+      indent = '  '.repeat(depth);
+    }
+
+    switch (blockType) {
+      case 1: // Page（文档根节点）
+        if (textContent) {
+          title = textContent;
+          markdown += '# ' + textContent + '\n\n';
+        }
+        break;
+
+      case 2: // Text
+        markdown += textContent + '\n\n';
+        break;
+
+      case 3: // Heading 1
+        markdown += '# ' + textContent + '\n\n';
+        break;
+      case 4: // Heading 2
+        markdown += '## ' + textContent + '\n\n';
+        break;
+      case 5: // Heading 3
+        markdown += '### ' + textContent + '\n\n';
+        break;
+      case 6: // Heading 4
+        markdown += '#### ' + textContent + '\n\n';
+        break;
+      case 7: // Heading 5
+        markdown += '##### ' + textContent + '\n\n';
+        break;
+      case 8: // Heading 6
+        markdown += '###### ' + textContent + '\n\n';
+        break;
+      case 9: case 10: case 11: // Heading 7-9（无对应 markdown，使用 H6）
+        markdown += '###### ' + textContent + '\n\n';
+        break;
+
+      case 12: // Bullet 无序列表
+        markdown += indent + '- ' + textContent + '\n';
+        break;
+
+      case 13: { // Ordered 有序列表
+        const counterKey = block.parent_id || '__root__';
+        if (!orderedCounters.has(counterKey)) {
+          orderedCounters.set(counterKey, 1);
+        }
+        const num = orderedCounters.get(counterKey);
+        orderedCounters.set(counterKey, num + 1);
+        markdown += indent + num + '. ' + textContent + '\n';
+        break;
+      }
+
+      case 14: { // Code 代码块
+        const lang = getCodeLanguageName(blockContent?.style?.language);
+        markdown += '```' + lang + '\n' + textContent + '\n```\n\n';
+        break;
+      }
+
+      case 15: // Quote 引用
+        markdown += textContent.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
+        break;
+
+      case 16: { // Equation 公式块
+        const eqContent = block.equation?.content || textContent || '';
+        if (eqContent) {
+          markdown += '$$\n' + eqContent + '\n$$\n\n';
+        }
+        break;
+      }
+
+      case 17: { // Todo 待办
+        const done = blockContent?.style?.done ? 'x' : ' ';
+        markdown += '- [' + done + '] ' + textContent + '\n';
+        break;
+      }
+
+      case 19: { // Callout 高亮块
+        markdown += '> ' + textContent + '\n';
+        if (block.children) {
+          for (const childId of block.children) {
+            const child = blockMap.get(childId);
+            if (child) {
+              const childContent = getBlockContent(child);
+              const childText = renderTextElements(childContent?.elements);
+              if (childText) {
+                markdown += '> ' + childText + '\n';
+              }
+            }
+          }
+        }
+        markdown += '\n';
+        break;
+      }
+
+      case 22: // Divider 分割线
+        markdown += '---\n\n';
+        break;
+
+      case 23: // File 文件
+        markdown += '[文件: ' + (block.file?.name || '附件') + ']\n\n';
+        break;
+
+      case 27: { // Image 图片
+        const imageToken = block.image?.token || '';
+        markdown += '![image](' + imageToken + ')\n\n';
+        break;
+      }
+
+      case 18: // Bitable 多维表格（引用外部数据表，需单独 API 获取）
+        markdown += '[多维表格]\n\n';
+        break;
+
+      case 20: // ChatCard 会话卡片
+        markdown += '[会话卡片]\n\n';
+        break;
+
+      case 21: // Diagram / UML 画图
+        markdown += '[画图]\n\n';
+        break;
+
+      case 24: // Grid 分栏容器
+        // 分栏容器本身不输出内容，其子块（GridColumn）及内容会在主循环中渲染
+        break;
+
+      case 25: // GridColumn 分栏列
+        // 分栏列容器本身不输出内容，其子块会在主循环中渲染
+        break;
+
+      case 26: // Iframe 内嵌网页
+        markdown += '[嵌入网页]\n\n';
+        break;
+
+      case 28: // ISV 三方应用块
+        markdown += '[三方应用]\n\n';
+        break;
+
+      case 29: // Mindnote 思维笔记
+        markdown += '[思维笔记]\n\n';
+        break;
+
+      case 30: { // Sheet 电子表格
+        const sheetContent = sheetDataMap?.get(block.block_id);
+        if (sheetContent) {
+          markdown += sheetContent + '\n\n';
+        } else {
+          markdown += '[电子表格]\n\n';
+        }
+        break;
+      }
+
+      case 31: // Table 普通表格
+        markdown += renderTable(block, blockMap) + '\n\n';
+        break;
+
+      case 32: // TableCell 表格单元格（由 renderTable 内部处理，不应单独出现）
+        break;
+
+      case 33: // View 视图
+        markdown += '[视图]\n\n';
+        break;
+
+      case 34: // QuoteContainer 引用容器
+        // 引用容器的子块会在主循环中渲染
+        break;
+
+      case 35: // Task 任务
+        markdown += '[任务]\n\n';
+        break;
+
+      case 36: case 37: case 38: case 39: // OKR 相关
+        markdown += '[OKR]\n\n';
+        break;
+
+      case 43: // Board 画板
+        markdown += '[画板]\n\n';
+        break;
+
+      default:
+        // 未知块类型，尝试渲染文本（如有）
+        if (textContent) {
+          markdown += textContent + '\n\n';
+        } else if (block.block_type) {
+          console.warn('[Blocks] 未处理的块类型:', block.block_type, 'block_id:', block.block_id);
+        }
+        break;
+    }
+
+    // 遇到非有序列表块时重置计数器
+    if (blockType !== 13) {
+      const counterKey = block.parent_id || '__root__';
+      orderedCounters.delete(counterKey);
+    }
+  }
+
+  return { markdown: markdown.trim(), title };
+}
+
+// ===== 电子表格内容获取 =====
+
+// 格式化电子表格单元格的值
+function formatSheetCell(cellValue) {
+  if (cellValue === null || cellValue === undefined) return '';
+  if (typeof cellValue === 'string') {
+    return cellValue.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ').trim();
+  }
+  if (typeof cellValue === 'number' || typeof cellValue === 'boolean') {
+    return String(cellValue);
+  }
+  if (Array.isArray(cellValue)) {
+    // 富文本单元格：多段内容拼接
+    return cellValue.map(seg => {
+      if (typeof seg === 'string') return seg;
+      if (seg && typeof seg === 'object') {
+        return seg.text || seg.content || seg.value || '';
+      }
+      return String(seg);
+    }).join('').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ').trim();
+  }
+  if (typeof cellValue === 'object') {
+    // 对象类型（链接、@提及等）
+    const text = cellValue.text || cellValue.content || cellValue.value || '';
+    return String(text).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ').trim();
+  }
+  return String(cellValue);
+}
+
+// 将二维数组转换为 Markdown 表格
+function valuesToMarkdownTable(values) {
+  if (!values || values.length === 0) return '[空表]\n';
+
+  // 过滤掉末尾全空行
+  let lastNonEmptyRow = values.length - 1;
+  while (lastNonEmptyRow > 0) {
+    const row = values[lastNonEmptyRow];
+    if (Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && cell !== '')) {
+      break;
+    }
+    lastNonEmptyRow--;
+  }
+  const trimmedValues = values.slice(0, lastNonEmptyRow + 1);
+  if (trimmedValues.length === 0) return '[空表]\n';
+
+  // 计算最大列数
+  let maxCols = 0;
+  for (const row of trimmedValues) {
+    if (Array.isArray(row) && row.length > maxCols) {
+      maxCols = row.length;
+    }
+  }
+  if (maxCols === 0) return '[空表]\n';
+
+  // 构建 Markdown 表格
+  let md = '';
+
+  // 表头
+  const headerRow = trimmedValues[0] || [];
+  const header = [];
+  for (let c = 0; c < maxCols; c++) {
+    header.push(formatSheetCell(headerRow[c]) || ' ');
+  }
+  md += '| ' + header.join(' | ') + ' |\n';
+  md += '| ' + header.map(() => '---').join(' | ') + ' |\n';
+
+  // 数据行
+  for (let r = 1; r < trimmedValues.length; r++) {
+    const row = trimmedValues[r] || [];
+    const cells = [];
+    for (let c = 0; c < maxCols; c++) {
+      cells.push(formatSheetCell(row[c]) || ' ');
+    }
+    md += '| ' + cells.join(' | ') + ' |\n';
+  }
+
+  return md;
+}
+
+// 获取电子表格内容并转换为 Markdown
+async function fetchSheetContent(spreadsheetToken, token, apiEndpoint) {
+  console.log('[Sheet] 开始获取电子表格:', spreadsheetToken);
+
+  // 第一步：获取元信息（所有 sheet 的 ID 和维度）
+  const metaUrl = `${apiEndpoint}/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`;
+  const metaResponse = await fetch(metaUrl, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  const metaData = await metaResponse.json();
+
+  if (metaData.code !== 0) {
+    console.warn('[Sheet] 获取元信息失败:', metaData.msg, '(code:', metaData.code, ')');
+    throw new Error(`获取表格元信息失败: ${metaData.msg} (code: ${metaData.code})`);
+  }
+
+  const sheets = metaData.data?.sheets || [];
+  if (sheets.length === 0) {
+    return '[空电子表格]';
+  }
+
+  console.log(`[Sheet] 发现 ${sheets.length} 个工作表`);
+
+  // 第二步：逐个读取每个 sheet 的内容（限制最多 5 个 sheet）
+  const maxSheets = Math.min(sheets.length, 5);
+  let allContent = '';
+
+  for (let i = 0; i < maxSheets; i++) {
+    const sheet = sheets[i];
+    const sheetId = sheet.sheetId;
+    const title = sheet.title || `Sheet${(sheet.index || i) + 1}`;
+    const rowCount = Math.min(sheet.rowCount || 100, 200); // 最多 200 行
+    const colCount = Math.min(Math.max(sheet.columnCount || 10, 1), 26); // 最多 26 列 (A-Z)
+
+    // 列数转字母 (1=A, 2=B, ..., 26=Z)
+    const endCol = String.fromCharCode(64 + colCount);
+    const range = `${sheetId}!A1:${endCol}${rowCount}`;
+
+    console.log(`[Sheet] 读取工作表 "${title}": ${range}`);
+
+    try {
+      const valuesUrl = `${apiEndpoint}/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${range}?valueRenderOption=ToString`;
+      const valuesResponse = await fetch(valuesUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const valuesData = await valuesResponse.json();
+
+      if (valuesData.code !== 0) {
+        console.warn(`[Sheet] 读取 "${title}" 失败:`, valuesData.msg);
+        allContent += `**${title}**: [获取失败: ${valuesData.msg}]\n\n`;
+        continue;
+      }
+
+      const values = valuesData.data?.valueRange?.values || [];
+      if (values.length === 0) {
+        allContent += `**${title}**: [空表]\n\n`;
+        continue;
+      }
+
+      console.log(`[Sheet] "${title}" 获取到 ${values.length} 行数据`);
+
+      // 多个 sheet 时显示标题
+      if (maxSheets > 1) {
+        allContent += `**${title}**\n\n`;
+      }
+      allContent += valuesToMarkdownTable(values);
+      allContent += '\n';
+    } catch (e) {
+      console.warn(`[Sheet] 读取 "${title}" 异常:`, e.message);
+      allContent += `**${title}**: [获取失败: ${e.message}]\n\n`;
+    }
+  }
+
+  if (sheets.length > maxSheets) {
+    allContent += `> 还有 ${sheets.length - maxSheets} 个工作表未显示\n\n`;
+  }
+
+  return allContent.trim();
+}
+
+// 批量预获取文档中所有电子表格的内容
+async function prefetchSheetData(allBlocks, token, apiEndpoint) {
+  const sheetDataMap = new Map();
+  const sheetBlocks = allBlocks.filter(b => b.block_type === 30 && b.sheet?.token);
+
+  if (sheetBlocks.length === 0) return sheetDataMap;
+
+  console.log(`[Sheet] 发现 ${sheetBlocks.length} 个嵌入式电子表格，开始获取内容...`);
+
+  for (const sb of sheetBlocks) {
+    try {
+      const content = await fetchSheetContent(sb.sheet.token, token, apiEndpoint);
+      sheetDataMap.set(sb.block_id, content);
+    } catch (e) {
+      console.warn('[Sheet] 获取电子表格失败:', sb.sheet.token, e.message);
+      sheetDataMap.set(sb.block_id, `[电子表格: 获取失败 - ${e.message}]`);
+    }
+  }
+
+  console.log(`[Sheet] 电子表格内容获取完成`);
+  return sheetDataMap;
+}
+
+// 分页获取文档所有块
+async function fetchAllDocBlocks(documentId, token, apiEndpoint) {
+  const allBlocks = [];
+  let pageToken = null;
+  let hasMore = true;
+  let pageCount = 0;
+  const MAX_PAGES = 100; // 安全上限：100 页 × 500 块 = 50,000 块
+
+  while (hasMore && pageCount < MAX_PAGES) {
+    const url = `${apiEndpoint}/open-apis/docx/v1/documents/${documentId}/blocks`;
+    const params = new URLSearchParams({
+      page_size: '500',
+      document_revision_id: '-1'
+    });
+    if (pageToken) {
+      params.append('page_token', pageToken);
+    }
+
+    console.log(`[Blocks] 获取第 ${pageCount + 1} 页:`, url);
+
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = await response.json();
+
+    if (data.code !== 0) {
+      throw new Error(`获取文档块失败: ${data.msg} (code: ${data.code})`);
+    }
+
+    const items = data.data?.items || [];
+    allBlocks.push(...items);
+
+    hasMore = data.data?.has_more || false;
+    pageToken = data.data?.page_token || null;
+    pageCount++;
+
+    console.log(`[Blocks] 第 ${pageCount} 页: ${items.length} 块, 总计: ${allBlocks.length}, 还有更多: ${hasMore}`);
+  }
+
+  if (pageCount >= MAX_PAGES) {
+    console.warn('[Blocks] 达到页数上限，文档可能被截断');
+  }
+
+  return allBlocks;
+}
+
 // ===== 获取文档内容 - 智能判断文档类型 =====
 async function fetchDocumentContent(request) {
   const { documentId, appId, appSecret, domain, docType: requestDocType } = request;
@@ -726,67 +1457,112 @@ async function fetchDocumentContent(request) {
       console.log('  obj_type:', docType);
     }
 
-    // ===== 使用 docs API 获取内容 =====
-    const contentUrl = `${apiEndpoint}/open-apis/docs/v1/content`;
+    // ===== 获取文档内容 =====
+    // 新的 docx/v1/blocks API 仅支持 docx 类型，其他类型降级到旧 API
+    const useNewBlocksAPI = (docType === 'docx');
+    let fullContent = '';
+    let title = '';
 
-    const params = new URLSearchParams({
-      content_type: 'markdown',
-      doc_token: finalDocId,
-      doc_type: docType
-    });
+    if (useNewBlocksAPI) {
+      // ===== 新 API：docx/v1/documents/:id/blocks =====
+      console.log('[Fetch] 使用新 docx/v1/blocks API');
+      console.log('[Fetch] 文档ID:', finalDocId);
 
-    console.log('[Fetch] 最终请求:', contentUrl);
-    console.log('[Fetch] 参数:', {
-      content_type: 'markdown',
-      doc_token: finalDocId.substring(0, 20) + '...',
-      doc_type: docType
-    });
+      try {
+        const allBlocks = await fetchAllDocBlocks(finalDocId, token, apiEndpoint);
+        console.log('[Fetch] 获取到块总数:', allBlocks.length);
 
-    const response = await fetch(`${contentUrl}?${params}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
+        // 预获取嵌入式电子表格内容
+        const sheetDataMap = await prefetchSheetData(allBlocks, token, apiEndpoint);
 
-    const data = await response.json();
-    console.log('[Fetch] 响应码:', data.code);
-    console.log('[Fetch] 响应数据:', data);
+        const result = blocksToMarkdown(allBlocks, sheetDataMap);
+        fullContent = result.markdown || '文档内容为空';
+        title = result.title || '';
 
-    if (data.code !== 0) {
-      let errorMsg = `获取文档失败: ${data.msg} (code: ${data.code})`;
+        console.log('[Fetch] Markdown 生成完成, 长度:', fullContent.length);
+      } catch (blockError) {
+        // 处理新 API 的错误码
+        let errorMsg = blockError.message;
 
-      if (data.code === 1770032 || data.code === 99991663) {
-        errorMsg += '\n\n【权限不足】\n\n';
-        errorMsg += '解决方案：\n';
-        errorMsg += '1. 确认应用已添加权限: docs:document.content:read\n';
-        errorMsg += '2. 使用用户令牌（tenant_access_token 只能访问公开文档）\n';
-        errorMsg += '3. 在文档中添加应用权限：「...」→「...更多」→「添加文档应用」';
-      } else if (data.code === 1770002) {
-        errorMsg += '\n\n【文档不存在】\n\n';
-        if (domain && domain.includes('/wiki/')) {
-          errorMsg += 'Wiki 文档说明：\n';
-          errorMsg += '• 确认 Wiki 文档存在\n';
-          errorMsg += '• 确认应用有 Wiki 节点阅读权限\n';
-          errorMsg += '• 确认 space_id 正确\n';
-        } else {
-          errorMsg += `提取的 doc_token: ${finalDocId}\n`;
+        if (errorMsg.includes('99991663') || errorMsg.toLowerCase().includes('forbidden')) {
+          errorMsg += '\n\n【权限不足】\n\n';
+          errorMsg += '解决方案：\n';
+          errorMsg += '1. 确认应用已添加权限: docx:document:readonly\n';
+          errorMsg += '2. 使用用户令牌（tenant_access_token 只能访问公开文档）\n';
+          errorMsg += '3. 在文档中添加应用权限：「...」→「...更多」→「添加文档应用」';
+        } else if (errorMsg.includes('99991664') || errorMsg.includes('99991668')) {
+          errorMsg += '\n\n【文档不存在】\n\n';
+          errorMsg += `文档 ID: ${finalDocId}\n`;
+          if (domain && domain.includes('/wiki/')) {
+            errorMsg += 'Wiki 文档说明：确认 Wiki 文档存在且有访问权限\n';
+          }
         }
+
+        throw new Error(errorMsg);
+      }
+    } else {
+      // ===== 降级：使用旧 docs/v1/content API（doc, sheet, bitable 等类型）=====
+      console.log('[Fetch] 使用旧 docs/v1/content API，文档类型:', docType);
+
+      const contentUrl = `${apiEndpoint}/open-apis/docs/v1/content`;
+      const params = new URLSearchParams({
+        content_type: 'markdown',
+        doc_token: finalDocId,
+        doc_type: docType
+      });
+
+      console.log('[Fetch] 最终请求:', contentUrl);
+      console.log('[Fetch] 参数:', {
+        content_type: 'markdown',
+        doc_token: finalDocId.substring(0, 20) + '...',
+        doc_type: docType
+      });
+
+      const response = await fetch(`${contentUrl}?${params}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+      console.log('[Fetch] 响应码:', data.code);
+      console.log('[Fetch] 响应数据:', data);
+
+      if (data.code !== 0) {
+        let errorMsg = `获取文档失败: ${data.msg} (code: ${data.code})`;
+
+        if (data.code === 1770032 || data.code === 99991663) {
+          errorMsg += '\n\n【权限不足】\n\n';
+          errorMsg += '解决方案：\n';
+          errorMsg += '1. 确认应用已添加权限: docs:document.content:read\n';
+          errorMsg += '2. 使用用户令牌（tenant_access_token 只能访问公开文档）\n';
+          errorMsg += '3. 在文档中添加应用权限：「...」→「...更多」→「添加文档应用」';
+        } else if (data.code === 1770002) {
+          errorMsg += '\n\n【文档不存在】\n\n';
+          if (domain && domain.includes('/wiki/')) {
+            errorMsg += 'Wiki 文档说明：\n';
+            errorMsg += '• 确认 Wiki 文档存在\n';
+            errorMsg += '• 确认应用有 Wiki 节点阅读权限\n';
+            errorMsg += '• 确认 space_id 正确\n';
+          } else {
+            errorMsg += `提取的 doc_token: ${finalDocId}\n`;
+          }
+        }
+
+        throw new Error(errorMsg);
       }
 
-      throw new Error(errorMsg);
+      fullContent = data.data?.content || '文档内容为空';
     }
 
     console.log('[Fetch] 获取成功');
 
-    // ===== 并行获取评论 =====
-    let fullContent = data.data?.content || '文档内容为空';
-    
-    // 只有当文档内容获取成功时，才尝试获取评论
+    // ===== 获取评论 =====
     // 注意：评论 API 需要单独的权限，如果没有权限，fetchComments 会优雅地返回空数组
     const comments = await fetchComments(finalDocId, docType, token, apiEndpoint);
-    
+
     if (comments.length > 0) {
       const commentsMd = formatComments(comments);
       console.log('[Fetch] 格式化后的评论 MD:', commentsMd);
@@ -797,21 +1573,16 @@ async function fetchDocumentContent(request) {
       console.log('[Fetch] 无评论或获取评论失败');
     }
 
-    // 关键修复：确保返回的是合并后的 fullContent
-    // 提取文档标题
-    let title = '';
-    // 尝试从Wiki信息中获取标题
-    if (wikiInfo && wikiInfo.title) {
+    // ===== 提取文档标题 =====
+    // 优先级：blocksToMarkdown 提取的 title → wikiInfo.title → 正则匹配
+    if (!title && wikiInfo && wikiInfo.title) {
       title = wikiInfo.title;
     }
-    // 尝试从文档内容中提取标题
-    else if (fullContent) {
-      // 尝试匹配一级标题
+    if (!title && fullContent) {
       const titleMatch = fullContent.match(/^#\s+(.*)$/m);
       if (titleMatch) {
         title = titleMatch[1].trim();
       } else {
-        // 如果没有一级标题，尝试匹配二级标题
         const h2Match = fullContent.match(/^##\s+(.*)$/m);
         if (h2Match) {
           title = h2Match[1].trim();
