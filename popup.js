@@ -6,6 +6,7 @@ let selectedContent = ''; // 存储用户选中的文本
 let documentRawData = null; // 存储原始数据（便于下载）
 let currentAbortController = null; // 用于中断 AI 输出
 let isGenerating = false; // 标记是否正在生成内容
+let conversationHistory = []; // 多轮对话历史 [{role, content}]
 
 let aiConfig = {
   model: 'zhipu',
@@ -412,6 +413,7 @@ async function fetchDocumentContent() {
     if (response.success) {
         documentContent = response.content;
         documentRawData = response;
+        conversationHistory = []; // 新文档加载，重置对话历史
         
         // 提取并显示文档标题
         let docTitle = '未知文档';
@@ -560,47 +562,56 @@ async function handleSendMessage() {
 
   input.value = '';
   appendUserMessage(text);
-  
-  let prompt = text;
-  
-  let rawContext = selectedContent || documentContent;
-  let contextLabel = '文档内容';
-  if (selectedContent) contextLabel = '选中的内容';
-  
-  const context = rawContext.length > 150000 ? rawContext.substring(0, 150000) : rawContext;
-  
-  if (context) {
-    const truncationHint = rawContext.length > 150000 ? ' (内容较长已部分截断)' : '';
-    prompt = `${contextLabel}${truncationHint}如下：\n${context}\n\n我的问题是：${text}`;
+
+  // 文档内容已通过 system message 传递，此处只需传用户原始问题
+  // 若有选中文本，在本轮消息中标注（不重复整篇文档）
+  let userContent = text;
+  if (selectedContent) {
+    const sel = selectedContent.length > 5000 ? selectedContent.substring(0, 5000) + '...' : selectedContent;
+    userContent = `针对选中的内容：\n${sel}\n\n我的问题是：${text}`;
   }
-  
-  await callAIService(prompt);
+
+  await callAIService(userContent);
   // 保存会话
   await saveSession();
 }
 
+// 构建发送给模型的完整 messages 数组（system + 历史 + 当前）
+function buildApiMessages(userContent) {
+  const messages = [];
+  if (documentContent) {
+    const ctx = documentContent.length > 150000
+      ? documentContent.substring(0, 150000) + '...(内容已截断)'
+      : documentContent;
+    messages.push({ role: 'system', content: `你是一个文档助手。以下是当前文档内容：\n\n${ctx}` });
+  }
+  messages.push(...conversationHistory);
+  messages.push({ role: 'user', content: userContent });
+  return messages;
+}
+
 // 调用 AI 服务
-async function callAIService(prompt) {
+async function callAIService(userContent) {
   // 强制重新加载最新配置，防止内存中的配置滞后
   await loadAIConfig();
-  
+
   const messageId = appendAIMessage('Thinking...');
   const messageEl = document.getElementById(messageId);
   const contentEl = messageEl.querySelector('.message-content');
   let fullResponse = '';
-  
+
   // 创建新的 AbortController
   currentAbortController = new AbortController();
   updateUIState(true);
-  
+
   try {
     const requestBody = {
       model: aiConfig.model,
       apiKey: aiConfig.apiKey,
-      messages: [{ role: 'user', content: prompt }],
+      messages: buildApiMessages(userContent),
       signal: currentAbortController.signal // 传入 signal
     };
-    
+
     if (aiConfig.model === 'custom') {
       requestBody.apiUrl = aiConfig.apiUrl;
       requestBody.modelName = aiConfig.modelName;
@@ -622,11 +633,17 @@ async function callAIService(prompt) {
     } else {
       await streamOpenAI(requestBody, onChunk);
     }
-    
+
+    // 流式输出完成，将本轮对话追加到历史
+    if (fullResponse) {
+      conversationHistory.push({ role: 'user', content: userContent });
+      conversationHistory.push({ role: 'assistant', content: fullResponse });
+    }
+
   } catch (error) {
     currentAbortController = null; // 先重置控制器
     updateUIState(false); // 恢复 UI
-    
+
     if (error.name === 'AbortError') {
       console.log('AI generation aborted');
     } else {
@@ -1323,6 +1340,7 @@ async function createNewSession() {
   // 清空UI
   documentContent = '';
   documentRawData = null;
+  conversationHistory = [];
   document.getElementById('chatMessages').innerHTML = '';
   document.getElementById('docTitleSection').classList.add('hidden');
   document.getElementById('docStatusSection').classList.add('hidden');
